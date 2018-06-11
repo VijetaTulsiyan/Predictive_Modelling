@@ -1,0 +1,375 @@
+---
+title: "Predicting Customer Churn Using WSDM - KKBox's Churn Data"
+author: "s3398979 - Vijeta Tulsiyan"
+date: "31.05.2018"
+output:
+  pdf_document:
+    fig_caption: yes
+    number_sections: yes
+    toc: no
+    toc_depth: 3
+  word_document:
+    toc: no
+    toc_depth: '3'
+  html_document:
+    df_print: paged
+    toc: no
+    toc_depth: '3'
+linkcolor: blue
+subtitle: MATH2319 Machine Learning Applied Project Phase II
+documentclass: article
+---
+
+\newpage
+
+\tableofcontents
+
+\newpage
+
+# Introduction \label{sec1}
+
+The objective of this project is to predict whether a customer of KKBox will churn after his/her subscription expires. KKBox offers subscription based music streaming service. We are required to forecast if a user makes a new service subscription transaction within 30 days after the current membership expiration date. The data is sourced from Kaggle's KKBOX Churn Prediction Challenge (https://www.kaggle.com/c/kkbox-churn-prediction-challenge).In Phase I, we cleaned and explored the data. We visualized the data for each predictor variable with respect to binary target variable (is_churn). 
+          In Phase II the cleaned data was saved in a new csv file named "Cleaned_KKBx.csv". This cleaned data had 1324001 rows and 18 variables. The ratio of binary target levels were 96% and 4% for "Not Churned" and "Churned", respectively. The dataset was highly imbalanced. A random sample was taken from the cleaned dataset in such a way that the proportion of binary target was 80% and 20% for "Not Churned" and "Churned", respectively. After this, a random sample of only 50,000 observations was taken maintaining the binary target labels' ratio as 80:20. We dropped one variable "payment_method_id" due to the error "New factor level" while working on R.
+          Feature selection was done using five different binary-classifiers on the processed data. The rest of this report is organised as follow. Section 2 describes an overview of the methodology. Section 3 discusses the fine-tuning process and detailed performance analysis of each classifier. Section 4 compares the performance of the classifiers ROC curve. Benchmarking is performed on different learned to rank them according to their performance. Section 5 critiques our methodology. The last section concludes with a summary.
+ 
+Feature Selection
+ 
+We applied binary classifiers to the training data to find relevant features. However, for data modelling we chose to keep all 17 variables. We noticed that the predictor variables that were selected by majority classifiers were: city, bd (age), reg_via (subcription registration method), is_auto_renew (auto renewal of subscription of songs) and num_100 (number of times the song was palyed 100 percent of its length). Feature selection by these 5 classifiers:
+                                      
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+#install.packages('e1071', dependencies=TRUE)
+library(mlr)
+library(tidyverse)
+library(knitr)
+library(GGally)
+library(dplyr)
+library(data.table)
+library(tibble)
+library(readr)
+library('lubridate')
+library(corrplot)
+library(rJava)
+library(FSelector)
+library(gbm)
+library(caTools)
+library(shiny)
+library(ggvis)
+# Importing cleaned datafrom phase 1
+df3 <- read.csv('Cleaned_KKBx.csv')
+df3$X <- NULL
+#dim(df3)
+df3 <- df3 %>% mutate(is_churn = factor(is_churn), city = factor(city), reg_via = factor(reg_via), payment_method_id = factor(payment_method_id), is_auto_renew = factor(is_auto_renew), is_cancel = factor(is_cancel))
+#sapply(df3, class)
+
+# Set a common random seed for reproducibility
+set.seed(1234)
+#Subsetting data as data size is too big for ML project 
+#Ratio of levels in target feature keeping as 80:20
+new1_df3 <- df3 %>% filter(is_churn == 1)
+new2_df3 <- df3 %>% filter(is_churn == 0)
+new2_df3 <- sample_n(new2_df3, 221224)
+new_df3 <-  rbind(new1_df3, new2_df3)
+
+#Now subset 50,000 rows from new dataset
+df3 <- sample_n(new_df3, 50000)
+prop.table(table(df3$is_churn)) %>% kable(caption = 'Percentage of Churn/No Churn Categories')
+#sapply(df3, class)
+#Dropping column payment method id due to issue New factor level found in test data or NA after fixing
+new_df3 = copy(df3)
+new_df3$payment_method_id <-  NULL
+
+# Old school way to spliting the data into 70 % training & 30 % test data
+split = sample.split(new_df3$is_churn, SplitRatio = 0.7)
+train_df3 = subset(new_df3, split == TRUE)
+test_df3 = subset(new_df3, split == FALSE)
+# They are quite balanced and representative of the full dataset
+# We shall use training data for modeling
+# and test data for model evaluation
+train.task <-makeClassifTask(id = "Train_ChurnPrediction", data = train_df3, target = "is_churn", positive = "1")
+
+# 2.1. Basic configuration ----
+# Configure learners with probability type
+learner1 <- makeLearner('classif.naiveBayes', predict.type = 'prob', fix.factors.prediction = TRUE) #baseline learner
+learner2 <- makeLearner("classif.rpart", predict.type = "prob", fix.factors.prediction = TRUE)
+learner3 <- makeLearner('classif.randomForest', predict.type = 'prob', fix.factors.prediction = TRUE)
+learner4 <- makeLearner("classif.gbm", predict.type = "prob", fix.factors.prediction = TRUE, par.vals = list(distribution = "bernoulli"))
+learner5 <- makeLearner("classif.logreg",predict.type = "prob", fix.factors.prediction = TRUE)
+
+# Check Feature Selected by learners but will consider all features for data modelling
+ctrl  <- makeFeatSelControlRandom(maxit = 10L)
+rdesc <- makeResampleDesc("CV", iters = 3L, stratify = TRUE)
+sfeats_NB <- selectFeatures(learner1, task = train.task,resampling = rdesc, control = ctrl, show.info = FALSE)
+sfeats_DT <- selectFeatures(learner2, task = train.task,resampling = rdesc, control = ctrl, show.info = FALSE)
+sfeats_RF <- selectFeatures(learner3, task = train.task,resampling = rdesc, control = ctrl, show.info = FALSE)
+sfeats_GBM <- selectFeatures(learner4, task = train.task,resampling = rdesc, control = ctrl, show.info = FALSE)
+sfeats_LogR <- selectFeatures(learner5, task = train.task,resampling = rdesc, control = ctrl, show.info = FALSE)
+
+print ("Features Selected using Naive Bayes Classifier are: ") 
+sfeats_NB$x
+print ("Features Selected using Decision Tree Classifier are: ") 
+sfeats_DT$x
+print ("Features Selected using Random Forest Classifier are: ") 
+sfeats_RF$x
+print ("Features Selected using Gradient Boost Classifier are: ") 
+sfeats_GBM$x
+print ("Features Selected using Logistic Regression Classifier are: ") 
+sfeats_LogR$x
+
+print("The mmce for Naive Bayes Classifier: ")
+sfeats_NB$y
+print("The mmce for Decision Tree Classifier: ")
+sfeats_DT$y
+print("The mmce for Random Forest Classifier: ")
+sfeats_RF$y
+print("The mmce for Gradient Boost Classifier: ")
+sfeats_GBM$y
+print("The mmce for Logistic Regression Classifier: ")
+sfeats_LogR$y
+
+```
+
+# Methodology
+
+We considered five classifiers - Naive Bayes (NB), Decision Tree (DT), Random Forest (RF), Gradient Boosting Machine (GBM) and Logistic Regression (LogReg). The NB was the baseline classifier. Each classifier was trained to make probability predictions so that we were able to adjust prediction threshold to refine the performance. 
+                      We split the full data set into 70 % training set and 30 % test set. Each set resembled the full data by having the same proportion of target classes i.e. approximately 80 % of customer who didn't churn and 20% of customers who churned. For fine-tuning process, we ran a five-folded cross-validation stratified sampling on each classifier. Stratified sampling was used to cater the slight imbalance class of the target feature.
+
+Next, for each classsifer, we determined the optimal probability threshold. Using the tuned hyperparameters and the optimal thresholds, we made predictions on the test data. During model training (hyperparameter tuning and threshold adjustment), we relied on mean misclassification error rate (mmce) and area under teh curve (auc). In addition to these, we also used the confusion matrix on the test data to evaluate classifiers' performance. We performed benchmarking and ranking to compare the performance fo different models. The modelling was implemented in `R` with the `mlr` package [@mlr]. 
+
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+# 2.2 Model fine-tuning ----
+# For naiveBayes, we can fine-tune Laplacian
+ps1 <- makeParamSet(makeNumericParam('laplace', lower = 0, upper = 30))
+#For decision tree, we can fine tune minsplit at each node for splitting, default is 20
+ps2 <- makeParamSet(makeIntegerParam("minsplit",lower = 20, upper = 40))
+# For randomForest, we can fine-tune mtry i.e mumber of variables randomly 
+# we can try mtry = 3, 4, 5 as mtry = sqrt(p) where p = 17
+ps3 <- makeParamSet(makeDiscreteParam('mtry', values = c(3,4,5)))
+#For Gradient boosting, we can fine tune type of distribution (default is Bernoulli), number of trees and depth of the tree
+ps4<- makeParamSet(makeDiscreteParam("distribution", values = "adaboost"),
+  makeIntegerParam("n.trees", lower = 300, upper = 400)) #number of trees
+  #makeIntegerParam("interaction.depth", lower = 2, upper = 10)) #depth of tree
+
+# Configure tune control search and a 5-CV stratified sampling
+ctrl  <- makeTuneControlGrid()
+rdesc <- makeResampleDesc("CV", iters = 5L, stratify = TRUE)
+set.seed(12345)
+```
+
+# Hyperparameter Tune-Fining
+
+## Naive Bayes
+
+Since the training set might have unwittingly excluded rare instances, the NB classifier might produce some fitted zero probabilities as predictions. To mitigate this, we ran a grid search to determine the optimal value of the Laplacian smoothing parameter. Using the stratified sampling discussed in the previous section, we experimented values ranging from 0 to 30. 
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+tuned_NB <- tuneParams(learner = learner1, resampling = rdesc, task = train.task, par.set = ps1, control = ctrl, measures = list(mmce, auc), show.info = FALSE)
+tunedLearner1 <- setHyperPars(learner1, par.vals = tuned_NB$x)
+print ("The optimal Laplacian parameter are: ")
+tuned_NB$x
+print ("The mean test error and auc are: ")
+tuned_NB$y
+```
+
+## Decision Tree
+
+We tune-fined parameter "minsplit" which represents the minimum number of observation in a node for a split to take place. We experimented values ranging from 20 to 40 using the stratified sampling.
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+tuned_DT <- tuneParams(learner = learner2, resampling = rdesc, task = train.task, par.set = ps2, control = ctrl, measures = list(mmce, auc), show.info = FALSE)
+tunedLearner2 <- setHyperPars(learner2, par.vals = tuned_DT$x)
+print ("The optimal minsplit parameter is: ")
+tuned_DT$x
+print ("The mean test error and auc are: ")
+tuned_DT$y
+```
+
+
+## Random Forest
+
+We tune-fined the number of variables randomly sampled as candidates at each split (i.e. `mtry`). For a classification problem, @Breiman suggests `mtry` = $\sqrt{p}$ where $p$ is the number of descriptive features. In our case, $\sqrt{p} = \sqrt{17}=4.12$. Therefore, we experimented `mtry` = 3, 4, and 5. We left other hyperparameters, such as the number of trees to grow at the default value. 
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+tuned_RF <- tuneParams(learner = learner3, resampling = rdesc, task = train.task, par.set = ps3, control = ctrl, measures = list(mmce, auc), show.info = FALSE)
+tunedLearner3 <- setHyperPars(learner3, par.vals = tuned_RF$x)
+print ("The optimal mtry parameter is: ")
+tuned_RF$x
+print ("The mean test error and auc are: ")
+tuned_RF$y
+```
+
+
+## GBM (Adaboost)
+
+For GBM, the default distribution is "Bernoulli's". For number of trees, we experimented values ranging from 300 to 400 using the stratified sampling. 
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+tuned_GBM <- tuneParams(learner = learner4, resampling = rdesc, task = train.task, par.set = ps4, control = ctrl, measures = list(mmce, auc), show.info = FALSE)
+tunedLearner4 <- setHyperPars(learner4, par.vals = tuned_GBM$x)
+print ("The optimal number of tree parameter is: ")
+tuned_GBM$x
+print ("The mean test error and auc are: ")
+tuned_GBM$y
+```
+
+## Threshold Adjustment
+  
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+
+# Train the tune wrappers
+tunedMod1  <- train(tunedLearner1, train.task)
+tunedMod2  <- train(tunedLearner2, train.task)
+tunedMod3  <- train(tunedLearner3, train.task)
+tunedMod4  <- train(tunedLearner4, train.task)
+tunedMod5  <- train(learner5,train.task)
+
+# Predict on training data
+tunedPred1 <- predict(tunedMod1, train.task)
+tunedPred2 <- predict(tunedMod2, train.task)
+tunedPred3 <- predict(tunedMod3, train.task)
+tunedPred4 <- predict(tunedMod4, train.task)
+tunedPred5 <- predict(tunedMod5, train.task)
+
+# 2.3 Obtain threshold values for each learner ----
+d1 <- generateThreshVsPerfData(tunedPred1, measures = list(mmce))
+d2 <- generateThreshVsPerfData(tunedPred2, measures = list(mmce))
+d3 <- generateThreshVsPerfData(tunedPred3, measures = list(mmce))
+d4 <- generateThreshVsPerfData(tunedPred4, measures = list(mmce))
+d5 <- generateThreshVsPerfData(tunedPred5, measures = list(mmce))
+```
+
+The following plots depict the value of mmce vs. the range of probability thresholds. These thresholds were used to determine the probability of a customer churning out. The threshhold for each classifier areas follows:
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+mlr::plotThreshVsPerf(d1) + ggplot2::labs(title = 'Threshold Adjustment for Naive Bayes', x = 'Threshold')
+mlr::plotThreshVsPerf(d2) + ggplot2::labs(title = 'Threshold Adjustment for Decision Tree', x = 'Threshold')
+mlr::plotThreshVsPerf(d3) + ggplot2::labs(title = 'Threshold Adjustment for Random Forest', x = 'Threshold')
+mlr::plotThreshVsPerf(d4) + ggplot2::labs(title = 'Threshold Adjustment for Gradient Boost(Adaboost)', x = 'Threshold')
+mlr::plotThreshVsPerf(d5) + ggplot2::labs(title = 'Threshold Adjustment for Logistic Regression', x = 'Threshold')
+
+# Get threshold for each learner
+threshold1 <- d1$data$threshold[ which.min(d1$data$mmce) ]
+threshold2 <- d2$data$threshold[ which.min(d2$data$mmce) ]
+threshold3 <- d3$data$threshold[ which.min(d3$data$mmce) ]
+threshold4 <- d4$data$threshold[ which.min(d4$data$mmce) ]
+threshold5 <- d4$data$threshold[ which.min(d5$data$mmce) ]
+
+print("The threshold for Naive Bayes classifier is: ")
+threshold1
+print("The threshold for Decision Tree classifier is: ")
+threshold2
+print("The threshold for Random Forest classifier is: ")
+threshold3
+print("The threshold for GBM classifier is: ")
+threshold4
+print("The threshold for Logistic Regression classifier is: ")
+threshold5
+```
+
+#Evaluation
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+# 3. Evaluation on test data ----
+# we shall use tuned wrapper models and optimal thresholds from previous sections
+testPred1 <- predict(tunedMod1, newdata = test_df3)
+testPred2 <- predict(tunedMod2, newdata = test_df3)
+testPred3 <- predict(tunedMod3, newdata = test_df3)
+testPred4 <- predict(tunedMod4, newdata = test_df3)
+testPred5 <- predict(tunedMod5, newdata = test_df3)
+
+
+testPred1 <- setThreshold(testPred1, threshold1 )
+testPred2 <- setThreshold(testPred2, threshold2 )
+testPred3 <- setThreshold(testPred3, threshold3 )
+testPred4 <- setThreshold(testPred4, threshold4 )
+testPred5 <- setThreshold(testPred5, threshold5 )
+```
+
+Using the parameters and threshold levels, we calculated the confusion matrix for each classifier. 
+
+The confusion matrix of NB classifer is as follow:
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+calculateConfusionMatrix( testPred1,relative = TRUE)
+```
+The confusion matrix of DT classifer is as follow:
+```{r, echo = FALSE}
+calculateConfusionMatrix(testPred2,relative = TRUE)
+```
+The confusion matrix of RF classifer is as follow:
+```{r, echo = FALSE}
+calculateConfusionMatrix(testPred3,relative = TRUE)
+
+```
+The confusion matrix of GBM classifer is as follow:
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+calculateConfusionMatrix(testPred4,relative = TRUE)
+```
+The confusion matrix of Logistic_Reg classifer is as follow:
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+calculateConfusionMatrix(testPred5,relative = TRUE)
+```
+
+#Benchmarking
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+print("Performance measures of Naive Bayes classifier is: ")
+performance(testPred1, measures = list(mmce, tpr, auc))
+print("Performance measures of Decision Tree classifier is: ")
+performance(testPred2, measures = list(mmce, tpr, auc))
+print("Performance measures of Random Forest classifier is: ")
+performance(testPred3, measures = list(mmce, tpr, auc))
+print("Performance measures of GBM classifier is: ")
+performance(testPred4, measures = list(mmce, tpr, auc))
+print("Performance measures of Logistic Regression classifier is: ")
+performance(testPred5, measures = list(mmce, tpr, auc))
+```
+
+We plotted ROC curve to visualise the the area under the curve (auc) and analysed the performance of each of the five classifiers. It is evident that of the five, Random Forest is the best performing model. 
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+df = generateThreshVsPerfData(list(Naive_Bayes = testPred1, Decision_Tree = testPred2, Random_Forest =testPred3 , GBM = testPred4, Logistic_Reg =testPred5), measures = list(fpr, tpr))
+plotROCCurves(df)
+```
+
+We also plot boxplot and violin plot to benchmark the performance of the classifiers. By default, benchmark is mlr pick the first measure in the list, which is auc in this case. We can change it to mmce if needed.
+We made a rank matric to rank their performance. Random Forest model stood first.
+
+```{r, message=FALSE, warning = FALSE, echo=FALSE, cache = TRUE}
+lrns = list(makeLearner("classif.naiveBayes", id = "Naive Bayes", predict.type = "prob", fix.factors.prediction = TRUE, par.vals = tuned_NB$x), makeLearner("classif.logreg", id = "Logistic Regression", predict.type = "prob", fix.factors.prediction = TRUE),
+  makeLearner("classif.rpart", id = "Decision Tree", predict.type = "prob", fix.factors.prediction = TRUE, par.vals = tuned_DT$x),
+  makeLearner("classif.randomForest", id = "Random Forest", predict.type = "prob", fix.factors.prediction = TRUE, par.vals = tuned_RF$x),
+  makeLearner("classif.gbm", id = "Gradient Boost(Adaboost)", predict.type = "prob",fix.factors.prediction = TRUE, par.vals = tuned_GBM$x))
+
+rdesc = makeResampleDesc("CV", iters = 5)
+measures = list(auc, mmce,fpr)
+bmr = benchmark(lrns, train.task, rdesc, measures = list(auc, mmce, fpr), show.info = FALSE)
+
+# Plot Benchmarks
+#plotBMRSummary(bmr, pretty.names = FALSE)
+plotBMRBoxplots(bmr, measure = mmce, pretty.names = FALSE)
+
+plotBMRBoxplots(bmr, measure = auc, style = "violin", pretty.names = FALSE) +
+  aes(color = learner.id) +
+  theme(strip.text.x = element_text(size = 8))
+
+# Rank Matrix
+
+m = convertBMRToRankMatrix(bmr, auc)
+plotBMRRanksAsBarChart(bmr, pretty.names = FALSE)
+```
+# Discussion
+
+The previous section showed that all classifiers did not perform accurately in predicting the customer churn despite the stratified sampling. This suggested class imbalance. A better approach would be a cost-sensitive classification where we could have allocated more cost to true positive groups i.e. the correctly predicted churn class. Another alternative would be under- or oversampling to adjust the class balance, despite the risk of inducing biases. These methods deal with handling imbalanced data by resampling original data to provide balanced classes. 
+           We can use ensemble methods such as bagging and boosting on the imbalaced dataset. Bagging handles overfitting nicely. Unlike boosting, bagging allows replacement in the bootstrapped sample. Random Forest uses bagging approach and GBM uses boosting approach to deal with imbalanced datasets. For this dataset, GBM model performed badly, as evident from confusion matrix. 
+           Random model performed better with hyper parameter tuning. Logistic regression was the second best performer with deafult parameters. We can try all 5 models using respective features selected (as shown above) to check if it helps to improve the performance. 
+                                 
+# Conclusion
+
+Among five classifiers, the Random Forest produces the best performance in predicting churn. We split the data into training and test sets. Via a stratified sampling, we determined the optimal value of the selected hyperparameter of each classifier and the probability threshold. Despite this, the imbalance class issue still persisted and therefore reduced the class accuracy of the chustomer curned. Bagging method seems to perform well, but we can consider cost-sensitive classification and under/over-sampling methods to check if it further improves the result or not.
+
+# Reference
+
+*www.kaggle.com
+
+*RMIT University Lecture and Tute notes
+
